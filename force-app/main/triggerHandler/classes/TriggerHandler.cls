@@ -23,6 +23,9 @@
  *       .withContext(System.TriggerOperation.BEFORE_UPDATE)
  *       .run();
  *
+ * Concise (in trigger): wire the Trigger context in one call:
+ *   new AccountHandler().fromTrigger().run();
+ *
  * Handler naming: pass the concrete Type to the constructor for a stable,
  * refactor-safe name used by bypass and loop tracking, e.g.
  *   public AccountHandler() { super(AccountHandler.class); }
@@ -66,6 +69,9 @@ public inherited sharing virtual class TriggerHandler {
 
     @TestVisible
     protected Set<Id> recordFilter;
+
+    @TestVisible
+    protected Boolean instanceBypassed = false;
 
     private String handlerName;
 
@@ -118,6 +124,19 @@ public inherited sharing virtual class TriggerHandler {
     }
 
     /**
+     * Auto-wire all record collections from the running Trigger context.
+     * Convenience for production triggers: new AccountHandler().fromTrigger().run();
+     * The operation type is still resolved from Trigger.operationType in run().
+     */
+    public TriggerHandler fromTrigger() {
+        this.newRecords = Trigger.new;
+        this.oldRecords = Trigger.old;
+        this.oldMap = Trigger.oldMap;
+        this.newMap = Trigger.newMap;
+        return this;
+    }
+
+    /**
      * Explicitly set the trigger operation context.
      * Required in test methods where Trigger.operationType is unavailable.
      */
@@ -166,6 +185,28 @@ public inherited sharing virtual class TriggerHandler {
     }
 
     /**
+     * Skip this handler invocation when the condition is true.
+     * Useful for user/profile/data-load driven bypass, e.g.
+     *   .bypassIf(UserInfo.getUserId() == integrationUserId)
+     * Unlike the static bypass API, this affects only the current run.
+     */
+    public TriggerHandler bypassIf(Boolean condition) {
+        if (condition == true) {
+            this.instanceBypassed = true;
+        }
+        return this;
+    }
+
+    /**
+     * Skip this handler invocation when the running user has the given
+     * Custom Permission. No hard dependency: if the permission does not
+     * exist, checkPermission returns false and the handler runs normally.
+     */
+    public TriggerHandler bypassIfPermission(String customPermissionApiName) {
+        return bypassIf(FeatureManagement.checkPermission(customPermissionApiName));
+    }
+
+    /**
      * Terminal method — executes the handler.
      * Validates context, checks bypass, enforces loop limits,
      * applies filters, dispatches to the appropriate virtual method,
@@ -187,6 +228,10 @@ public inherited sharing virtual class TriggerHandler {
                 'Trigger operation is null. If running in a test, ' +
                 'call withContext(System.TriggerOperation) before run().'
             );
+        }
+
+        if (this.instanceBypassed) {
+            return;
         }
 
         String resolvedName = resolveHandlerName();
@@ -353,6 +398,64 @@ public inherited sharing virtual class TriggerHandler {
             return this.handlerName;
         }
         return String.valueOf(this).substringBefore(':');
+    }
+
+    // ──────────────────────────────────────────────
+    //  Field-change diff helpers (require oldMap)
+    // ──────────────────────────────────────────────
+
+    /**
+     * Returns the old version of a record from oldMap, or null if unavailable.
+     */
+    @TestVisible
+    protected SObject getOld(SObject record) {
+        if (this.oldMap == null || record == null || record.Id == null) {
+            return null;
+        }
+        return this.oldMap.get(record.Id);
+    }
+
+    /**
+     * True if the given field value differs between the new record and its
+     * old version. Returns false when no old version is available (e.g. insert).
+     */
+    @TestVisible
+    protected Boolean hasChanged(SObject record, SObjectField field) {
+        SObject oldRecord = getOld(record);
+        if (oldRecord == null) {
+            return false;
+        }
+        return record.get(field) != oldRecord.get(field);
+    }
+
+    /**
+     * True if any of the given fields changed on the record.
+     */
+    @TestVisible
+    protected Boolean hasChanged(SObject record, List<SObjectField> fields) {
+        for (SObjectField field : fields) {
+            if (hasChanged(record, field)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Returns the subset of newRecords whose given field changed.
+     */
+    @TestVisible
+    protected List<SObject> changedRecords(SObjectField field) {
+        List<SObject> changed = new List<SObject>();
+        if (this.newRecords == null) {
+            return changed;
+        }
+        for (SObject record : this.newRecords) {
+            if (hasChanged(record, field)) {
+                changed.add(record);
+            }
+        }
+        return changed;
     }
 
     // ──────────────────────────────────────────────

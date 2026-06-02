@@ -91,6 +91,29 @@ private class TriggerHandlerTest {
         }
     }
 
+    private class DiffHandler extends TriggerHandler {
+        public Boolean nameChanged;
+        public Boolean nameOrPhoneChanged;
+        public List<SObject> changedNames;
+        public SObject capturedOldFirst;
+
+        public DiffHandler() {
+            super(DiffHandler.class);
+        }
+
+        protected override void beforeUpdate() {
+            this.changedNames = changedRecords(Account.Name);
+            if (this.newRecords != null && !this.newRecords.isEmpty()) {
+                this.nameChanged = hasChanged(this.newRecords[0], Account.Name);
+                this.nameOrPhoneChanged = hasChanged(
+                    this.newRecords[0],
+                    new List<SObjectField>{ Account.Name, Account.Phone }
+                );
+                this.capturedOldFirst = getOld(this.newRecords[0]);
+            }
+        }
+    }
+
     // ──────────────────────────────────────────────
     //  Dispatch tests
     // ──────────────────────────────────────────────
@@ -499,6 +522,114 @@ private class TriggerHandlerTest {
             .run();
         System.assert(h.andFinallyCalled, 'Should complete without error');
         System.assert(h.limitsLogged, 'Overridable logLimits should have been invoked');
+    }
+
+    // ──────────────────────────────────────────────
+    //  fromTrigger tests
+    // ──────────────────────────────────────────────
+
+    @IsTest
+    static void fromTriggerIsChainableAndSafeOutsideTrigger() {
+        TestHandler h = new TestHandler();
+        TriggerHandler result = h.fromTrigger();
+        System.assert(result === h, 'fromTrigger should be chainable');
+
+        h.withContext(System.TriggerOperation.BEFORE_INSERT).run();
+        System.assertEquals('beforeInsert', h.invokedMethod);
+        System.assertEquals(null, h.capturedNew,
+            'No Trigger context in test → record collections are null');
+    }
+
+    // ──────────────────────────────────────────────
+    //  Diff helper tests
+    // ──────────────────────────────────────────────
+
+    @IsTest
+    static void diffHelpersDetectChanges() {
+        Id rid = fakeId(1);
+        Account newRec = new Account(Id = rid, Name = 'New', Phone = '111');
+        Account oldRec = new Account(Id = rid, Name = 'Old', Phone = '111');
+
+        DiffHandler h = new DiffHandler();
+        h.withNew(new List<SObject>{ newRec })
+            .withOldMap(new Map<Id, SObject>{ rid => oldRec })
+            .withContext(System.TriggerOperation.BEFORE_UPDATE)
+            .run();
+
+        System.assertEquals(1, h.changedNames.size(), 'Name changed → 1 record');
+        System.assertEquals(true, h.nameChanged);
+        System.assertEquals(true, h.nameOrPhoneChanged,
+            'Multi-field check is true when any field changed');
+        System.assertEquals('Old', (String) h.capturedOldFirst.get(Account.Name));
+    }
+
+    @IsTest
+    static void diffHelpersReportNoChange() {
+        Id rid = fakeId(1);
+        Account newRec = new Account(Id = rid, Name = 'Same', Phone = '111');
+        Account oldRec = new Account(Id = rid, Name = 'Same', Phone = '111');
+
+        DiffHandler h = new DiffHandler();
+        h.withNew(new List<SObject>{ newRec })
+            .withOldMap(new Map<Id, SObject>{ rid => oldRec })
+            .withContext(System.TriggerOperation.BEFORE_UPDATE)
+            .run();
+
+        System.assertEquals(0, h.changedNames.size(), 'No change → empty');
+        System.assertEquals(false, h.nameChanged);
+        System.assertEquals(false, h.nameOrPhoneChanged);
+    }
+
+    @IsTest
+    static void diffHelpersReturnFalseWithoutOldMap() {
+        DiffHandler h = new DiffHandler();
+        h.withNew(new List<SObject>{ new Account(Id = fakeId(1), Name = 'X') })
+            .withContext(System.TriggerOperation.BEFORE_UPDATE)
+            .run();
+
+        System.assertEquals(0, h.changedNames.size(),
+            'No oldMap → no detected changes');
+        System.assertEquals(false, h.nameChanged);
+        System.assertEquals(null, h.capturedOldFirst);
+    }
+
+    // ──────────────────────────────────────────────
+    //  Instance bypass tests
+    // ──────────────────────────────────────────────
+
+    @IsTest
+    static void bypassIfTrueSkipsExecution() {
+        TestHandler h = new TestHandler();
+        h.withNew(new List<SObject>{ new Account(Name = 'Skip') })
+            .bypassIf(true)
+            .withContext(System.TriggerOperation.BEFORE_INSERT)
+            .run();
+
+        System.assertEquals(null, h.invokedMethod, 'bypassIf(true) should skip dispatch');
+        System.assertEquals(false, h.andFinallyCalled);
+    }
+
+    @IsTest
+    static void bypassIfFalseRunsNormally() {
+        TestHandler h = new TestHandler();
+        h.withNew(new List<SObject>{ new Account(Name = 'Run') })
+            .bypassIf(false)
+            .withContext(System.TriggerOperation.BEFORE_INSERT)
+            .run();
+
+        System.assertEquals('beforeInsert', h.invokedMethod);
+    }
+
+    @IsTest
+    static void bypassIfPermissionMissingPermissionRuns() {
+        TestHandler h = new TestHandler();
+        h.withNew(new List<SObject>{ new Account(Name = 'Perm') })
+            .bypassIfPermission('Nonexistent_Custom_Permission_XYZ')
+            .withContext(System.TriggerOperation.BEFORE_INSERT)
+            .run();
+
+        System.assertEquals('beforeInsert', h.invokedMethod,
+            'Missing custom permission → not bypassed');
     }
 
     // ──────────────────────────────────────────────
