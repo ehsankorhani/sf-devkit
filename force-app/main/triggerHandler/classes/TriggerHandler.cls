@@ -1,36 +1,9 @@
 /**
- * @description Fluent Trigger Handler Framework
+ * Copyright (c) 2026 Ehsan Korhani
+ * SPDX-License-Identifier: MIT
  *
- * A modern trigger handler with a true fluent API. Records are passed explicitly
- * via the fluent chain, making the framework testable by design without needing
- * to mock Trigger static context.
- *
- * Usage (in trigger):
- *   new AccountHandler()
- *       .withNew(Trigger.new)
- *       .withOld(Trigger.old)
- *       .withOldMap((Map<Id, SObject>) Trigger.oldMap)
- *       .withNewMap((Map<Id, SObject>) Trigger.newMap)
- *       .maxLoops(5)
- *       .trackLimits()
- *       .run();
- *
- * Usage (in test — no Trigger mocking needed):
- *   new AccountHandler()
- *       .withNew(testRecords)
- *       .withOld(testOldRecords)
- *       .withOldMap(testOldMap)
- *       .withContext(System.TriggerOperation.BEFORE_UPDATE)
- *       .run();
- *
- * Concise (in trigger): wire the Trigger context in one call:
- *   new AccountHandler().fromTrigger().run();
- *
- * Handler naming: pass the concrete Type to the constructor for a stable,
- * refactor-safe name used by bypass and loop tracking, e.g.
- *   public AccountHandler() { super(AccountHandler.class); }
- *
- * @group Trigger Handler
+ * @author Ehsan Korhani
+ * @version 1.0.0
  */
 public inherited sharing virtual class TriggerHandler {
 

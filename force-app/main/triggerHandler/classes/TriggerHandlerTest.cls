@@ -1,6 +1,9 @@
 /**
- * @description Tests for the Fluent Trigger Handler Framework.
- * @group Trigger Handler
+ * Copyright (c) 2026 Ehsan Korhani
+ * SPDX-License-Identifier: MIT
+ *
+ * @author Ehsan Korhani
+ * @version 1.0.0
  */
 @IsTest
 private class TriggerHandlerTest {
