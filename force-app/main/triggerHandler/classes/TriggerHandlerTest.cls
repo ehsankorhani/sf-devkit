@@ -1,0 +1,511 @@
+/**
+ * @description Tests for the Fluent Trigger Handler Framework.
+ * @group Trigger Handler
+ */
+@IsTest
+private class TriggerHandlerTest {
+
+    // ──────────────────────────────────────────────
+    //  Test handlers
+    // ──────────────────────────────────────────────
+
+    private class TestHandler extends TriggerHandler {
+        public String invokedMethod;
+        public Boolean andFinallyCalled = false;
+        public Boolean limitsLogged = false;
+        public List<SObject> capturedNew;
+        public List<SObject> capturedOld;
+        public Map<Id, SObject> capturedNewMap;
+
+        public TestHandler() {
+            super(TestHandler.class);
+        }
+
+        protected override void beforeInsert() {
+            this.invokedMethod = 'beforeInsert';
+            this.capturedNew = this.newRecords;
+        }
+
+        protected override void beforeUpdate() {
+            this.invokedMethod = 'beforeUpdate';
+            this.capturedNew = this.newRecords;
+            this.capturedOld = this.oldRecords;
+        }
+
+        protected override void beforeDelete() {
+            this.invokedMethod = 'beforeDelete';
+            this.capturedNew = this.newRecords;
+            this.capturedOld = this.oldRecords;
+        }
+
+        protected override void afterInsert() {
+            this.invokedMethod = 'afterInsert';
+            this.capturedNew = this.newRecords;
+            this.capturedNewMap = this.newMap;
+        }
+
+        protected override void afterUpdate() {
+            this.invokedMethod = 'afterUpdate';
+            this.capturedNew = this.newRecords;
+            this.capturedOld = this.oldRecords;
+        }
+
+        protected override void afterDelete() {
+            this.invokedMethod = 'afterDelete';
+            this.capturedNew = this.newRecords;
+            this.capturedOld = this.oldRecords;
+        }
+
+        protected override void afterUndelete() {
+            this.invokedMethod = 'afterUndelete';
+            this.capturedNew = this.newRecords;
+        }
+
+        protected override void andFinally() {
+            this.andFinallyCalled = true;
+        }
+
+        protected override void logLimits(
+            String handlerName,
+            Integer queriesBefore,
+            Integer dmlBefore,
+            Integer cpuBefore
+        ) {
+            this.limitsLogged = true;
+        }
+    }
+
+    private class ThrowingHandler extends TriggerHandler {
+        public Boolean andFinallyCalled = false;
+
+        public ThrowingHandler() {
+            super(ThrowingHandler.class);
+        }
+
+        protected override void beforeInsert() {
+            throw new TriggerHandlerException('boom');
+        }
+
+        protected override void andFinally() {
+            this.andFinallyCalled = true;
+        }
+    }
+
+    // ──────────────────────────────────────────────
+    //  Dispatch tests
+    // ──────────────────────────────────────────────
+
+    @IsTest
+    static void dispatchesBeforeInsert() {
+        TestHandler h = new TestHandler();
+        List<SObject> records = new List<SObject>{ new Account(Name = 'Test') };
+        h.withNew(records).withContext(System.TriggerOperation.BEFORE_INSERT).run();
+        System.assertEquals('beforeInsert', h.invokedMethod, 'Should dispatch to beforeInsert');
+        System.assert(h.andFinallyCalled, 'andFinally should be called');
+    }
+
+    @IsTest
+    static void dispatchesBeforeUpdate() {
+        TestHandler h = new TestHandler();
+        List<SObject> records = new List<SObject>{ new Account(Name = 'Test') };
+        List<SObject> oldRecords = new List<SObject>{ new Account(Name = 'Old') };
+        h.withNew(records)
+            .withOld(oldRecords)
+            .withContext(System.TriggerOperation.BEFORE_UPDATE)
+            .run();
+        System.assertEquals('beforeUpdate', h.invokedMethod);
+    }
+
+    @IsTest
+    static void dispatchesBeforeDelete() {
+        TestHandler h = new TestHandler();
+        List<SObject> oldRecords = new List<SObject>{ new Account(Id = fakeId(1)) };
+        h.withOld(oldRecords).withContext(System.TriggerOperation.BEFORE_DELETE).run();
+        System.assertEquals('beforeDelete', h.invokedMethod);
+        System.assertEquals(1, h.capturedOld.size());
+    }
+
+    @IsTest
+    static void dispatchesAfterInsert() {
+        TestHandler h = new TestHandler();
+        List<SObject> records = new List<SObject>{ new Account(Name = 'Test') };
+        h.withNew(records).withContext(System.TriggerOperation.AFTER_INSERT).run();
+        System.assertEquals('afterInsert', h.invokedMethod);
+    }
+
+    @IsTest
+    static void dispatchesAfterUpdate() {
+        TestHandler h = new TestHandler();
+        List<SObject> records = new List<SObject>{ new Account(Name = 'Test') };
+        h.withNew(records)
+            .withOldMap(new Map<Id, SObject>())
+            .withContext(System.TriggerOperation.AFTER_UPDATE)
+            .run();
+        System.assertEquals('afterUpdate', h.invokedMethod);
+    }
+
+    @IsTest
+    static void dispatchesAfterDelete() {
+        TestHandler h = new TestHandler();
+        List<SObject> oldRecords = new List<SObject>{ new Account(Id = fakeId(1)) };
+        h.withOld(oldRecords).withContext(System.TriggerOperation.AFTER_DELETE).run();
+        System.assertEquals('afterDelete', h.invokedMethod);
+    }
+
+    @IsTest
+    static void dispatchesAfterUndelete() {
+        TestHandler h = new TestHandler();
+        List<SObject> records = new List<SObject>{ new Account(Id = fakeId(1)) };
+        h.withNew(records).withContext(System.TriggerOperation.AFTER_UNDELETE).run();
+        System.assertEquals('afterUndelete', h.invokedMethod);
+    }
+
+    // ──────────────────────────────────────────────
+    //  Fluent API tests
+    // ──────────────────────────────────────────────
+
+    @IsTest
+    static void fluentChainReturnsHandler() {
+        TestHandler h = new TestHandler();
+        TriggerHandler result = h.withNew(new List<SObject>())
+            .withOld(new List<SObject>())
+            .withOldMap(new Map<Id, SObject>())
+            .withNewMap(new Map<Id, SObject>())
+            .maxLoops(3)
+            .trackLimits();
+        System.assert(result === h, 'Chaining should return the same handler instance');
+    }
+
+    @IsTest
+    static void withNewMapIsAccessible() {
+        TestHandler h = new TestHandler();
+        Account a = new Account(Id = fakeId(1), Name = 'Mapped');
+        Map<Id, SObject> newMap = new Map<Id, SObject>{ a.Id => a };
+        h.withNew(new List<SObject>{ a })
+            .withNewMap(newMap)
+            .withContext(System.TriggerOperation.AFTER_INSERT)
+            .run();
+        System.assertEquals(1, h.capturedNewMap.size(), 'newMap should be available to handler');
+    }
+
+    // ──────────────────────────────────────────────
+    //  Filtering tests
+    // ──────────────────────────────────────────────
+
+    @IsTest
+    static void onlyTheseFiltersNewAndOld() {
+        Id keep1 = fakeId(1);
+        Id keep2 = fakeId(2);
+        Id discard = fakeId(3);
+
+        List<SObject> newRecs = new List<SObject>{
+            new Account(Id = keep1, Name = 'Keep1'),
+            new Account(Id = keep2, Name = 'Keep2'),
+            new Account(Id = discard, Name = 'Discard')
+        };
+        List<SObject> oldRecs = new List<SObject>{
+            new Account(Id = keep1, Name = 'Keep1 Old'),
+            new Account(Id = keep2, Name = 'Keep2 Old'),
+            new Account(Id = discard, Name = 'Discard Old')
+        };
+
+        TestHandler h = new TestHandler();
+        h.withNew(newRecs)
+            .withOld(oldRecs)
+            .onlyThese(new Set<Id>{ keep1, keep2 })
+            .withContext(System.TriggerOperation.BEFORE_UPDATE)
+            .run();
+
+        System.assertEquals(2, h.capturedNew.size(), 'newRecords should be filtered');
+        System.assertEquals(2, h.capturedOld.size(), 'oldRecords should be filtered for parity');
+    }
+
+    @IsTest
+    static void onlyTheseFiltersOnDelete() {
+        Id keep = fakeId(1);
+        Id discard = fakeId(2);
+
+        TestHandler h = new TestHandler();
+        h.withOld(new List<SObject>{
+                new Account(Id = keep, Name = 'Keep'),
+                new Account(Id = discard, Name = 'Discard')
+            })
+            .onlyThese(new Set<Id>{ keep })
+            .withContext(System.TriggerOperation.BEFORE_DELETE)
+            .run();
+
+        System.assertEquals(1, h.capturedOld.size(), 'Delete contexts should still filter oldRecords');
+    }
+
+    @IsTest
+    static void onlyTheseInBeforeInsertThrows() {
+        TestHandler h = new TestHandler();
+        h.withNew(new List<SObject>{ new Account(Name = 'Test') })
+            .onlyThese(new Set<Id>{ fakeId(1) })
+            .withContext(System.TriggerOperation.BEFORE_INSERT);
+
+        try {
+            h.run();
+            System.assert(false, 'Should have thrown for onlyThese in BEFORE_INSERT');
+        } catch (TriggerHandler.TriggerHandlerException e) {
+            System.assert(e.getMessage().contains('BEFORE_INSERT'),
+                'Should explain the BEFORE_INSERT limitation: ' + e.getMessage());
+        }
+    }
+
+    @IsTest
+    static void onlyTheseWithNullRecordsDoesNotFilter() {
+        TestHandler h = new TestHandler();
+        h.withNew(null)
+            .onlyThese(new Set<Id>{ fakeId(1) })
+            .withContext(System.TriggerOperation.BEFORE_UPDATE)
+            .run();
+
+        System.assertEquals(null, h.capturedNew);
+        System.assertEquals('beforeUpdate', h.invokedMethod);
+    }
+
+    // ──────────────────────────────────────────────
+    //  Bypass tests
+    // ──────────────────────────────────────────────
+
+    @IsTest
+    static void bypassedHandlerDoesNotExecute() {
+        TriggerHandler.clearAll();
+        TriggerHandler.bypass(TestHandler.class);
+
+        TestHandler h = new TestHandler();
+        h.withNew(new List<SObject>{ new Account(Name = 'Test') })
+            .withContext(System.TriggerOperation.BEFORE_INSERT)
+            .run();
+
+        System.assertEquals(null, h.invokedMethod, 'Bypassed handler should not execute');
+        System.assertEquals(false, h.andFinallyCalled, 'andFinally should not run when bypassed');
+    }
+
+    @IsTest
+    static void clearBypassRestoresExecution() {
+        TriggerHandler.clearAll();
+        TriggerHandler.bypass(TestHandler.class);
+        TriggerHandler.clearBypass(TestHandler.class);
+
+        TestHandler h = new TestHandler();
+        h.withNew(new List<SObject>{ new Account(Name = 'Test') })
+            .withContext(System.TriggerOperation.BEFORE_INSERT)
+            .run();
+
+        System.assertEquals('beforeInsert', h.invokedMethod, 'Cleared bypass should execute');
+    }
+
+    @IsTest
+    static void typeAndStringBypassAreEquivalent() {
+        TriggerHandler.clearAll();
+        TriggerHandler.bypass(TestHandler.class);
+        System.assert(TriggerHandler.isBypassed(TestHandler.class.getName()),
+            'Type bypass should be readable by name');
+        System.assert(TriggerHandler.isBypassed(TestHandler.class),
+            'Type bypass should be readable by Type');
+    }
+
+    @IsTest
+    static void isBypassedReturnsCorrectState() {
+        TriggerHandler.clearAll();
+        System.assertEquals(false, TriggerHandler.isBypassed('SomeHandler'));
+
+        TriggerHandler.bypass('SomeHandler');
+        System.assertEquals(true, TriggerHandler.isBypassed('SomeHandler'));
+
+        TriggerHandler.clearBypass('SomeHandler');
+        System.assertEquals(false, TriggerHandler.isBypassed('SomeHandler'));
+    }
+
+    @IsTest
+    static void clearAllBypassesRemovesAll() {
+        TriggerHandler.clearAll();
+        TriggerHandler.bypass('HandlerA');
+        TriggerHandler.bypass('HandlerB');
+        TriggerHandler.clearAllBypasses();
+
+        System.assertEquals(0, TriggerHandler.getBypassedHandlers().size());
+    }
+
+    @IsTest
+    static void getBypassedHandlersReturnsCopy() {
+        TriggerHandler.clearAll();
+        TriggerHandler.bypass('HandlerX');
+
+        Set<String> retrieved = TriggerHandler.getBypassedHandlers();
+        System.assertEquals(1, retrieved.size());
+
+        retrieved.add('HandlerY');
+
+        Set<String> after = TriggerHandler.getBypassedHandlers();
+        System.assertEquals(1, after.size(), 'Should return a defensive copy');
+    }
+
+    // ──────────────────────────────────────────────
+    //  Loop limit tests
+    // ──────────────────────────────────────────────
+
+    @IsTest
+    static void maxLoopsAllowsConfiguredRuns() {
+        TriggerHandler.clearAll();
+
+        TestHandler h = new TestHandler();
+        h.withNew(new List<SObject>{ new Account(Name = 'Loop Test') })
+            .maxLoops(3)
+            .withContext(System.TriggerOperation.BEFORE_INSERT)
+            .run();
+
+        System.assertEquals('beforeInsert', h.invokedMethod, 'First run should work');
+    }
+
+    @IsTest
+    static void maxLoopsThrowsAfterLimit() {
+        TriggerHandler.clearAll();
+
+        TestHandler h = new TestHandler();
+        h.withNew(new List<SObject>{ new Account(Name = 'Loop Test') })
+            .maxLoops(1)
+            .withContext(System.TriggerOperation.BEFORE_INSERT);
+        h.run();
+
+        TestHandler h2 = new TestHandler();
+        h2.withNew(new List<SObject>{ new Account(Name = 'Loop Test 2') })
+            .maxLoops(1)
+            .withContext(System.TriggerOperation.BEFORE_INSERT);
+
+        try {
+            h2.run();
+            System.assert(false, 'Should have thrown on second run');
+        } catch (TriggerHandler.TriggerHandlerException e) {
+            System.assert(e.getMessage().contains('Maximum loop count'),
+                'Should mention loop count: ' + e.getMessage());
+        }
+    }
+
+    @IsTest
+    static void maxLoopsSoftExitDoesNotThrow() {
+        TriggerHandler.clearAll();
+
+        TestHandler h = new TestHandler();
+        h.withNew(new List<SObject>{ new Account(Name = 'Soft 1') })
+            .maxLoops(1, false)
+            .withContext(System.TriggerOperation.BEFORE_INSERT);
+        h.run();
+
+        TestHandler h2 = new TestHandler();
+        h2.withNew(new List<SObject>{ new Account(Name = 'Soft 2') })
+            .maxLoops(1, false)
+            .withContext(System.TriggerOperation.BEFORE_INSERT);
+        h2.run();
+
+        System.assertEquals(null, h2.invokedMethod, 'Soft exit should skip dispatch');
+        System.assertEquals(false, h2.andFinallyCalled, 'Soft exit should skip andFinally');
+    }
+
+    @IsTest
+    static void loopBudgetIsPerContext() {
+        TriggerHandler.clearAll();
+        List<SObject> recs = new List<SObject>{ new Account(Name = 'Per Context') };
+
+        TestHandler before = new TestHandler();
+        before.withNew(recs).maxLoops(1).withContext(System.TriggerOperation.BEFORE_INSERT).run();
+
+        TestHandler afterH = new TestHandler();
+        afterH.withNew(recs).maxLoops(1).withContext(System.TriggerOperation.AFTER_INSERT).run();
+
+        System.assertEquals('afterInsert', afterH.invokedMethod,
+            'before+after should not share the same loop budget');
+    }
+
+    // ──────────────────────────────────────────────
+    //  Exception / context tests
+    // ──────────────────────────────────────────────
+
+    @IsTest
+    static void throwsWhenCalledOutsideTrigger() {
+        TestHandler h = new TestHandler();
+        h.withNew(new List<SObject>{ new Account(Name = 'No Trigger') });
+
+        try {
+            h.run();
+            System.assert(false, 'Should have thrown');
+        } catch (TriggerHandler.TriggerHandlerException e) {
+            System.assert(e.getMessage().contains('outside of trigger'),
+                'Should mention outside trigger: ' + e.getMessage());
+        }
+    }
+
+    @IsTest
+    static void throwsWhenContextIsNull() {
+        TestHandler h = new TestHandler();
+        h.withNew(new List<SObject>{ new Account(Name = 'Null Ctx') })
+            .withContext(null);
+
+        try {
+            h.run();
+            System.assert(false, 'Should have thrown for null operation');
+        } catch (TriggerHandler.TriggerHandlerException e) {
+            System.assert(e.getMessage().contains('withContext'),
+                'Should hint at withContext: ' + e.getMessage());
+        }
+    }
+
+    // ──────────────────────────────────────────────
+    //  andFinally tests
+    // ──────────────────────────────────────────────
+
+    @IsTest
+    static void andFinallyCalledInEveryContext() {
+        for (System.TriggerOperation op : System.TriggerOperation.values()) {
+            TriggerHandler.clearAll();
+            TestHandler h = new TestHandler();
+            h.withNew(new List<SObject>{ new Account(Name = 'Final ' + op) })
+                .withContext(op)
+                .run();
+            System.assert(h.andFinallyCalled,
+                'andFinally should be called for ' + op);
+        }
+    }
+
+    @IsTest
+    static void andFinallyRunsWhenDispatchThrows() {
+        ThrowingHandler h = new ThrowingHandler();
+        h.withNew(new List<SObject>{ new Account(Name = 'Throws') })
+            .withContext(System.TriggerOperation.BEFORE_INSERT);
+
+        try {
+            h.run();
+            System.assert(false, 'Should have rethrown the dispatch exception');
+        } catch (TriggerHandler.TriggerHandlerException e) {
+            System.assertEquals('boom', e.getMessage());
+        }
+
+        System.assert(h.andFinallyCalled,
+            'andFinally must run even when the dispatched method throws');
+    }
+
+    // ──────────────────────────────────────────────
+    //  Track limits test
+    // ──────────────────────────────────────────────
+
+    @IsTest
+    static void trackLimitsInvokesOverridableLogger() {
+        TestHandler h = new TestHandler();
+        h.withNew(new List<SObject>{ new Account(Name = 'Limits') })
+            .trackLimits()
+            .withContext(System.TriggerOperation.BEFORE_INSERT)
+            .run();
+        System.assert(h.andFinallyCalled, 'Should complete without error');
+        System.assert(h.limitsLogged, 'Overridable logLimits should have been invoked');
+    }
+
+    // ──────────────────────────────────────────────
+    //  Helpers
+    // ──────────────────────────────────────────────
+
+    private static Id fakeId(Integer seed) {
+        return (Id) ('001' + String.valueOf(seed).leftPad(12, '0'));
+    }
+}
