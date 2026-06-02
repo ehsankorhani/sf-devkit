@@ -1,18 +1,13 @@
-# Salesforce DX Project: Next Steps
+# sf-devkit
 
-Now that you’ve created a Salesforce DX project, what’s next? Here are some documentation resources to get you started.
+A collection of utilities and toolkits for Salesforce developers and architects.
 
-## How Do You Plan to Deploy Your Changes?
+## Goals
 
-Do you want to deploy a set of changes, or create a self-contained application? Choose a [development model](https://developer.salesforce.com/tools/vscode/en/user-guide/development-models).
+- **Simplicity** — Easy to use and read, with clear APIs and minimal ceremony.
+- **AI-friendly** — Libraries and frameworks designed so AI assistants can understand and work with them reliably.
+- **Feature richness** — Practical capabilities without unnecessary complexity.
 
-## Configure Your Salesforce DX Project
+## Modules
 
-The `sfdx-project.json` file contains useful configuration information for your project. See [Salesforce DX Project Configuration](https://developer.salesforce.com/docs/atlas.en-us.sfdx_dev.meta/sfdx_dev/sfdx_dev_ws_config.htm) in the _Salesforce DX Developer Guide_ for details about this file.
-
-## Read All About It
-
-- [Salesforce Extensions Documentation](https://developer.salesforce.com/tools/vscode/)
-- [Salesforce CLI Setup Guide](https://developer.salesforce.com/docs/atlas.en-us.sfdx_setup.meta/sfdx_setup/sfdx_setup_intro.htm)
-- [Salesforce DX Developer Guide](https://developer.salesforce.com/docs/atlas.en-us.sfdx_dev.meta/sfdx_dev/sfdx_dev_intro.htm)
-- [Salesforce CLI Command Reference](https://developer.salesforce.com/docs/atlas.en-us.sfdx_cli_reference.meta/sfdx_cli_reference/cli_reference.htm)
+Each toolkit lives under `force-app/main/` with its own README and documentation.
