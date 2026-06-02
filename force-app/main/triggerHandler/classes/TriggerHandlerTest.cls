@@ -91,6 +91,62 @@ private class TriggerHandlerTest {
         }
     }
 
+    private class CountingHandler extends TriggerHandler {
+        public Integer processedCount = 0;
+        public List<SObject> lastProcessed;
+
+        public CountingHandler() {
+            super(CountingHandler.class);
+        }
+
+        protected override void afterUpdate() {
+            this.lastProcessed = this.newRecords;
+            this.processedCount += (this.newRecords == null ? 0 : this.newRecords.size());
+        }
+    }
+
+    private class StateWriterHandler extends TriggerHandler {
+        public StateWriterHandler() {
+            super(StateWriterHandler.class);
+        }
+
+        protected override void beforeUpdate() {
+            putState('computed', 42);
+        }
+    }
+
+    private class StateReaderHandler extends TriggerHandler {
+        public Boolean sawState = false;
+        public Object readValue;
+
+        public StateReaderHandler() {
+            super(StateReaderHandler.class);
+        }
+
+        protected override void afterUpdate() {
+            this.sawState = hasState('computed');
+            this.readValue = getState('computed');
+        }
+    }
+
+    private class ErrorHookHandler extends TriggerHandler {
+        public Boolean onErrorCalled = false;
+        public String capturedMessage;
+
+        public ErrorHookHandler() {
+            super(ErrorHookHandler.class);
+        }
+
+        protected override void beforeInsert() {
+            throw new TriggerHandlerException('kaboom');
+        }
+
+        protected override void onError(Exception e) {
+            this.onErrorCalled = true;
+            this.capturedMessage = e.getMessage();
+        }
+    }
+
     private class DiffHandler extends TriggerHandler {
         public Boolean nameChanged;
         public Boolean nameOrPhoneChanged;
@@ -630,6 +686,129 @@ private class TriggerHandlerTest {
 
         System.assertEquals('beforeInsert', h.invokedMethod,
             'Missing custom permission → not bypassed');
+    }
+
+    // ──────────────────────────────────────────────
+    //  processOnce (idempotency) tests
+    // ──────────────────────────────────────────────
+
+    @IsTest
+    static void processOnceSkipsAlreadyProcessedRecords() {
+        TriggerHandler.clearAll();
+        Id idA = fakeId(1);
+        Id idB = fakeId(2);
+
+        CountingHandler first = new CountingHandler();
+        first.withNew(new List<SObject>{
+                new Account(Id = idA, Name = 'A'),
+                new Account(Id = idB, Name = 'B')
+            })
+            .processOnce()
+            .withContext(System.TriggerOperation.AFTER_UPDATE)
+            .run();
+        System.assertEquals(2, first.processedCount, 'First run processes both records');
+
+        CountingHandler second = new CountingHandler();
+        second.withNew(new List<SObject>{
+                new Account(Id = idA, Name = 'A2'),
+                new Account(Id = idB, Name = 'B2')
+            })
+            .processOnce()
+            .withContext(System.TriggerOperation.AFTER_UPDATE)
+            .run();
+        System.assertEquals(0, second.processedCount,
+            'Re-entry should skip records already processed');
+    }
+
+    @IsTest
+    static void processOnceProcessesOnlyNewRecords() {
+        TriggerHandler.clearAll();
+        Id idA = fakeId(1);
+        Id idB = fakeId(2);
+
+        CountingHandler first = new CountingHandler();
+        first.withNew(new List<SObject>{ new Account(Id = idA, Name = 'A') })
+            .processOnce()
+            .withContext(System.TriggerOperation.AFTER_UPDATE)
+            .run();
+        System.assertEquals(1, first.processedCount);
+
+        CountingHandler second = new CountingHandler();
+        second.withNew(new List<SObject>{
+                new Account(Id = idA, Name = 'A'),
+                new Account(Id = idB, Name = 'B')
+            })
+            .processOnce()
+            .withContext(System.TriggerOperation.AFTER_UPDATE)
+            .run();
+        System.assertEquals(1, second.processedCount, 'Only the new record should process');
+        System.assertEquals(idB, second.lastProcessed[0].Id, 'Remaining record should be B');
+    }
+
+    // ──────────────────────────────────────────────
+    //  Transaction state bag tests
+    // ──────────────────────────────────────────────
+
+    @IsTest
+    static void stateBagHandsOffBetweenHandlers() {
+        TriggerHandler.clearAll();
+        Id rid = fakeId(1);
+
+        StateWriterHandler writer = new StateWriterHandler();
+        writer.withNew(new List<SObject>{ new Account(Id = rid, Name = 'W') })
+            .withOldMap(new Map<Id, SObject>{ rid => new Account(Id = rid, Name = 'Old') })
+            .withContext(System.TriggerOperation.BEFORE_UPDATE)
+            .run();
+
+        StateReaderHandler reader = new StateReaderHandler();
+        reader.withNew(new List<SObject>{ new Account(Id = rid, Name = 'W') })
+            .withContext(System.TriggerOperation.AFTER_UPDATE)
+            .run();
+
+        System.assert(reader.sawState, 'State written earlier should be visible');
+        System.assertEquals(42, (Integer) reader.readValue);
+    }
+
+    @IsTest
+    static void clearAllResetsStateBag() {
+        TriggerHandler.clearAll();
+        Id rid = fakeId(1);
+
+        StateWriterHandler writer = new StateWriterHandler();
+        writer.withNew(new List<SObject>{ new Account(Id = rid, Name = 'W') })
+            .withOldMap(new Map<Id, SObject>{ rid => new Account(Id = rid, Name = 'Old') })
+            .withContext(System.TriggerOperation.BEFORE_UPDATE)
+            .run();
+
+        TriggerHandler.clearAll();
+
+        StateReaderHandler reader = new StateReaderHandler();
+        reader.withNew(new List<SObject>{ new Account(Id = rid, Name = 'W') })
+            .withContext(System.TriggerOperation.AFTER_UPDATE)
+            .run();
+
+        System.assertEquals(false, reader.sawState, 'clearAll should wipe the state bag');
+    }
+
+    // ──────────────────────────────────────────────
+    //  onError hook tests
+    // ──────────────────────────────────────────────
+
+    @IsTest
+    static void onErrorIsCalledThenRethrows() {
+        ErrorHookHandler h = new ErrorHookHandler();
+        h.withNew(new List<SObject>{ new Account(Name = 'Err') })
+            .withContext(System.TriggerOperation.BEFORE_INSERT);
+
+        try {
+            h.run();
+            System.assert(false, 'Should rethrow after onError');
+        } catch (TriggerHandler.TriggerHandlerException e) {
+            System.assertEquals('kaboom', e.getMessage());
+        }
+
+        System.assert(h.onErrorCalled, 'onError hook should be invoked');
+        System.assertEquals('kaboom', h.capturedMessage);
     }
 
     // ──────────────────────────────────────────────

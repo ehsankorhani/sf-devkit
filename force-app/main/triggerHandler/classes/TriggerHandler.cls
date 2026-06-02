@@ -41,6 +41,12 @@ public inherited sharing virtual class TriggerHandler {
     private static Set<String> bypassedHandlers = new Set<String>();
 
     @TestVisible
+    private static Map<String, Set<Id>> processedRecords = new Map<String, Set<Id>>();
+
+    @TestVisible
+    private static Map<String, Object> stateBag = new Map<String, Object>();
+
+    @TestVisible
     protected List<SObject> newRecords;
 
     @TestVisible
@@ -72,6 +78,9 @@ public inherited sharing virtual class TriggerHandler {
 
     @TestVisible
     protected Boolean instanceBypassed = false;
+
+    @TestVisible
+    protected Boolean processOnceEnabled = false;
 
     private String handlerName;
 
@@ -207,6 +216,17 @@ public inherited sharing virtual class TriggerHandler {
     }
 
     /**
+     * Process each record at most once per handler+context for the duration of
+     * the transaction. On re-entry, already-processed records are filtered out,
+     * so recursive DML re-runs only the records it hasn't seen. Records without
+     * an Id (e.g. BEFORE_INSERT) cannot be de-duplicated and always pass through.
+     */
+    public TriggerHandler processOnce() {
+        this.processOnceEnabled = true;
+        return this;
+    }
+
+    /**
      * Terminal method — executes the handler.
      * Validates context, checks bypass, enforces loop limits,
      * applies filters, dispatches to the appropriate virtual method,
@@ -247,12 +267,20 @@ public inherited sharing virtual class TriggerHandler {
         guardFilterContext();
         applyFilter();
 
+        if (this.processOnceEnabled &&
+            !applyProcessOnce(resolvedName + '::' + this.triggerOp)) {
+            return;
+        }
+
         Integer queriesBefore = Limits.getQueries();
         Integer dmlBefore = Limits.getDmlStatements();
         Integer cpuBefore = Limits.getCpuTime();
 
         try {
             dispatch();
+        } catch (Exception e) {
+            onError(e);
+            throw e;
         } finally {
             andFinally();
             if (this.shouldTrackLimits) {
@@ -368,6 +396,75 @@ public inherited sharing virtual class TriggerHandler {
             }
         }
         return filtered;
+    }
+
+    /**
+     * Filters out records already processed under this key, marking the
+     * remaining ones as processed. Returns true if anything is left to run.
+     */
+    private Boolean applyProcessOnce(String key) {
+        Set<Id> processed = processedRecords.get(key);
+        if (processed == null) {
+            processed = new Set<Id>();
+            processedRecords.put(key, processed);
+        }
+
+        Boolean useNew = this.newRecords != null;
+        List<SObject> primary = useNew ? this.newRecords : this.oldRecords;
+        if (primary == null) {
+            return true;
+        }
+
+        Set<Id> keptIds = new Set<Id>();
+        Boolean keptAny = false;
+        List<SObject> remaining = new List<SObject>();
+        for (SObject rec : primary) {
+            if (rec.Id == null) {
+                remaining.add(rec);
+                keptAny = true;
+            } else if (!processed.contains(rec.Id)) {
+                remaining.add(rec);
+                processed.add(rec.Id);
+                keptIds.add(rec.Id);
+                keptAny = true;
+            }
+        }
+
+        if (useNew) {
+            this.newRecords = remaining;
+            if (this.oldRecords != null) {
+                this.oldRecords = filterListByIds(this.oldRecords, keptIds);
+            }
+        } else {
+            this.oldRecords = remaining;
+        }
+        this.oldMap = filterMapByIds(this.oldMap, keptIds);
+        this.newMap = filterMapByIds(this.newMap, keptIds);
+
+        return keptAny;
+    }
+
+    private List<SObject> filterListByIds(List<SObject> source, Set<Id> ids) {
+        List<SObject> out = new List<SObject>();
+        for (SObject rec : source) {
+            if (rec.Id == null || ids.contains(rec.Id)) {
+                out.add(rec);
+            }
+        }
+        return out;
+    }
+
+    private Map<Id, SObject> filterMapByIds(Map<Id, SObject> source, Set<Id> ids) {
+        if (source == null) {
+            return null;
+        }
+        Map<Id, SObject> out = new Map<Id, SObject>();
+        for (Id key : source.keySet()) {
+            if (ids.contains(key)) {
+                out.put(key, source.get(key));
+            }
+        }
+        return out;
     }
 
     /**
@@ -499,6 +596,38 @@ public inherited sharing virtual class TriggerHandler {
     protected virtual void andFinally() {
     }
 
+    /**
+     * Called when a dispatched method throws, before the exception is rethrown.
+     * Override to log/route errors (e.g. Nebula Logger). The default rethrows
+     * so transaction behavior is unchanged unless you override this hook.
+     */
+    @TestVisible
+    protected virtual void onError(Exception e) {
+    }
+
+    // ──────────────────────────────────────────────
+    //  Transaction state bag (before ↔ after handoff)
+    // ──────────────────────────────────────────────
+
+    /**
+     * Stash a value in transaction-scoped state, e.g. so beforeUpdate can hand
+     * data to afterUpdate without re-querying. Cleared by clearAll().
+     */
+    @TestVisible
+    protected void putState(String key, Object value) {
+        stateBag.put(key, value);
+    }
+
+    @TestVisible
+    protected Object getState(String key) {
+        return stateBag.get(key);
+    }
+
+    @TestVisible
+    protected Boolean hasState(String key) {
+        return stateBag.containsKey(key);
+    }
+
     // ──────────────────────────────────────────────
     //  Static bypass API
     // ──────────────────────────────────────────────
@@ -506,7 +635,7 @@ public inherited sharing virtual class TriggerHandler {
     public static void bypass(String handlerName) {
         bypassedHandlers.add(handlerName);
     }
-
+ 
     public static void bypass(Type handlerType) {
         bypass(handlerType.getName());
     }
@@ -536,12 +665,15 @@ public inherited sharing virtual class TriggerHandler {
     }
 
     /**
-     * Reset all static state (bypasses and loop trackers).
+     * Reset all static state (bypasses, loop trackers, processed-record
+     * tracking, and the transaction state bag).
      * Useful in test setup or when resetting between operations.
      */
     public static void clearAll() {
         clearAllBypasses();
         loopTracker.clear();
+        processedRecords.clear();
+        stateBag.clear();
     }
 
     // ──────────────────────────────────────────────
